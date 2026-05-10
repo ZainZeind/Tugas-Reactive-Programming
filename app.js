@@ -2,26 +2,15 @@
 // REACTIVE PROGRAMMING ENGINE - JadwalinYuk!
 // ============================================================
 class ReactiveState {
-  constructor(initialValue) {
-    this._value = initialValue;
-    this._subscribers = [];
-  }
+  constructor(v) { this._value = v; this._subs = []; }
   get value() { return this._value; }
-  set value(newVal) {
-    this._value = newVal;
-    this._subscribers.forEach(fn => fn(this._value));
-  }
-  subscribe(fn) {
-    this._subscribers.push(fn);
-    fn(this._value);
-    return () => { this._subscribers = this._subscribers.filter(s => s !== fn); };
-  }
+  set value(v) { this._value = v; this._subs.forEach(fn => fn(v)); }
+  subscribe(fn) { this._subs.push(fn); fn(this._value); }
 }
-
-function computed(deps, computeFn) {
-  const result = new ReactiveState(computeFn(...deps.map(d => d.value)));
-  deps.forEach(dep => dep.subscribe(() => { result.value = computeFn(...deps.map(d => d.value)); }));
-  return result;
+function computed(deps, fn) {
+  const r = new ReactiveState(fn(...deps.map(d => d.value)));
+  deps.forEach(d => d.subscribe(() => { r.value = fn(...deps.map(d => d.value)); }));
+  return r;
 }
 
 // ============================================================
@@ -46,16 +35,12 @@ const currentView$ = new ReactiveState('tasks');
 const darkMode$ = new ReactiveState(localStorage.getItem('jadwalinyuk_dark') === 'true');
 const trashTasks$ = new ReactiveState(JSON.parse(localStorage.getItem('jadwalinyuk_trash') || '[]'));
 const confirmDialog$ = new ReactiveState(null);
-const profileOpen$ = new ReactiveState(false);
-const notifPanelOpen$ = new ReactiveState(false);
 
-const filteredTasks$ = computed([tasks$, searchQuery$], (tasks, query) => {
-  if (!query) return tasks;
-  const q = query.toLowerCase();
-  return tasks.filter(t => t.title.toLowerCase().includes(q) || t.category.toLowerCase().includes(q));
+const filteredTasks$ = computed([tasks$, searchQuery$], (tasks, q) => {
+  if (!q) return tasks;
+  const lq = q.toLowerCase();
+  return tasks.filter(t => t.title.toLowerCase().includes(lq) || t.category.toLowerCase().includes(lq));
 });
-const pendingTasks$ = computed([filteredTasks$], t => t.filter(x => !x.completed));
-const completedTasks$ = computed([filteredTasks$], t => t.filter(x => x.completed));
 const totalCount$ = computed([tasks$], t => t.length);
 const completedCount$ = computed([tasks$], t => t.filter(x => x.completed).length);
 const pendingCount$ = computed([tasks$], t => t.filter(x => !x.completed).length);
@@ -64,19 +49,14 @@ tasks$.subscribe(v => localStorage.setItem(STORAGE_KEY, JSON.stringify(v)));
 trashTasks$.subscribe(v => localStorage.setItem('jadwalinyuk_trash', JSON.stringify(v)));
 darkMode$.subscribe(v => { localStorage.setItem('jadwalinyuk_dark', v); document.documentElement.classList.toggle('dark', v); });
 
-// ============================================================
-// OVERDUE CHECK
-// ============================================================
 function isOverdue(task) {
   if (task.completed || !task.deadline) return false;
-  const now = new Date();
-  const deadlineStr = task.deadline + (task.time ? 'T' + task.time : 'T23:59');
-  const dl = new Date(deadlineStr);
-  return now > dl;
+  const dl = new Date(task.deadline + (task.time ? 'T' + task.time : 'T23:59'));
+  return new Date() > dl;
 }
 
 // ============================================================
-// CRUD
+// CRUD - confirm on DELETE only, NO confirm on toggle
 // ============================================================
 function addTask(title, priority, category, deadline, time) {
   if (!title.trim()) return;
@@ -84,20 +64,18 @@ function addTask(title, priority, category, deadline, time) {
 }
 
 function deleteTask(id) {
-  const task = tasks$.value.find(t => t.id === id);
-  if (task) {
-    trashTasks$.value = [task, ...trashTasks$.value];
-    tasks$.value = tasks$.value.filter(t => t.id !== id);
-  }
+  showConfirm('Are you sure you want to delete this task?', () => {
+    const task = tasks$.value.find(t => t.id === id);
+    if (task) {
+      trashTasks$.value = [task, ...trashTasks$.value];
+      tasks$.value = tasks$.value.filter(t => t.id !== id);
+    }
+  });
 }
 
+// Direct toggle - no popup
 function toggleTask(id) {
-  const task = tasks$.value.find(t => t.id === id);
-  if (!task) return;
-  const msg = task.completed ? 'Are you sure you want to mark this task as incomplete?' : 'Are you sure this task is completed?';
-  showConfirm(msg, () => {
-    tasks$.value = tasks$.value.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
-  });
+  tasks$.value = tasks$.value.map(t => t.id === id ? { ...t, completed: !t.completed } : t);
 }
 
 function updateTask(id, updates) {
@@ -116,9 +94,7 @@ function permanentDelete(id) {
 }
 
 function emptyTrash() {
-  showConfirm('Are you sure you want to permanently delete all tasks in trash?', () => {
-    trashTasks$.value = [];
-  });
+  showConfirm('Are you sure you want to permanently delete all tasks in trash?', () => { trashTasks$.value = []; });
 }
 
 // ============================================================
@@ -126,81 +102,62 @@ function emptyTrash() {
 // ============================================================
 function showConfirm(message, onYes) {
   confirmDialog$.value = { message, onYes };
-  const el = document.getElementById('confirm-dialog');
-  const bd = document.getElementById('confirm-backdrop');
+  const el = document.getElementById('confirm-dialog'), bd = document.getElementById('confirm-backdrop');
   el.classList.remove('hidden'); bd.classList.remove('hidden');
   requestAnimationFrame(() => { el.classList.add('modal-visible'); bd.classList.add('backdrop-visible'); });
   document.getElementById('confirm-msg').textContent = message;
 }
-function confirmYes() {
-  if (confirmDialog$.value && confirmDialog$.value.onYes) confirmDialog$.value.onYes();
-  closeConfirm();
-}
+function confirmYes() { if (confirmDialog$.value?.onYes) confirmDialog$.value.onYes(); closeConfirm(); }
 function closeConfirm() {
-  const el = document.getElementById('confirm-dialog');
-  const bd = document.getElementById('confirm-backdrop');
+  const el = document.getElementById('confirm-dialog'), bd = document.getElementById('confirm-backdrop');
   el.classList.remove('modal-visible'); bd.classList.remove('backdrop-visible');
   setTimeout(() => { el.classList.add('hidden'); bd.classList.add('hidden'); }, 300);
   confirmDialog$.value = null;
 }
 
 // ============================================================
-// RENDERING HELPERS
+// RENDER HELPERS
 // ============================================================
-function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
-
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function priCfg(p) {
-  return { high: { label:'High Priority', bg:'bg-error-container', text:'text-on-error-container', bar:'bg-error' },
-    medium: { label:'Medium', bg:'bg-primary-fixed', text:'text-on-primary-fixed', bar:'bg-primary' },
-    low: { label:'Low', bg:'bg-secondary-fixed', text:'text-on-secondary-fixed', bar:'bg-secondary' } }[p] || { label:'Medium', bg:'bg-primary-fixed', text:'text-on-primary-fixed', bar:'bg-primary' };
+  return { high:{label:'High Priority',bg:'bg-red-100 dark:bg-red-900/30',text:'text-red-700 dark:text-red-400',bar:'bg-red-500'},
+    medium:{label:'Medium',bg:'bg-blue-100 dark:bg-blue-900/30',text:'text-blue-700 dark:text-blue-400',bar:'bg-blue-500'},
+    low:{label:'Low',bg:'bg-gray-100 dark:bg-gray-700/30',text:'text-gray-600 dark:text-gray-400',bar:'bg-gray-400'} }[p] || {label:'Medium',bg:'bg-blue-100',text:'text-blue-700',bar:'bg-blue-500'};
 }
-
-function formatDeadline(d) {
-  if (!d) return '';
-  try { return new Date(d).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }); } catch(e) { return d; }
-}
-
-function formatTime(t) {
-  if (!t) return '';
-  try {
-    const [h, m] = t.split(':');
-    const hr = parseInt(h); const ampm = hr >= 12 ? 'PM' : 'AM';
-    return ((hr % 12) || 12) + ':' + m + ' ' + ampm;
-  } catch(e) { return t; }
-}
+function formatDeadline(d) { if (!d) return ''; try { return new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch(e) { return d; } }
+function formatTime(t) { if (!t) return ''; try { const [h,m]=t.split(':'); const hr=parseInt(h); return ((hr%12)||12)+':'+m+(hr>=12?' PM':' AM'); } catch(e) { return t; } }
 
 function renderTaskCard(task, isTrash) {
   const p = priCfg(task.priority);
   const overdue = isOverdue(task);
   if (isTrash) {
-    return `<div class="task-card bg-surface border border-[#E5E5E7] p-md lg:p-lg rounded-xl flex items-center gap-md group relative overflow-hidden opacity-70" data-id="${task.id}">
-      <div class="flex-grow"><p class="font-body-md text-body-md text-secondary line-through">${esc(task.title)}</p>
-        <div class="flex items-center gap-sm mt-xs"><span class="px-2 py-0.5 rounded-full ${p.bg} ${p.text} font-label-sm text-[10px] uppercase">${p.label}</span></div></div>
-      <button onclick="restoreTask(${task.id})" class="text-primary hover:bg-primary-fixed/50 p-sm rounded-lg transition-all" title="Restore"><span class="material-symbols-outlined">restore</span></button>
-      <button onclick="permanentDelete(${task.id})" class="text-error hover:bg-error-container/50 p-sm rounded-lg transition-all" title="Delete Forever"><span class="material-symbols-outlined">delete_forever</span></button></div>`;
+    return `<div class="task-card bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-4 rounded-xl flex items-center gap-4 group relative overflow-hidden opacity-70">
+      <div class="flex-grow"><p class="text-sm text-gray-400 line-through">${esc(task.title)}</p>
+        <div class="flex items-center gap-2 mt-1"><span class="px-2 py-0.5 rounded-full ${p.bg} ${p.text} text-[10px] font-semibold uppercase">${p.label}</span></div></div>
+      <button onclick="restoreTask(${task.id})" class="text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30 p-2 rounded-lg transition-all" title="Restore"><span class="material-symbols-outlined">restore</span></button>
+      <button onclick="permanentDelete(${task.id})" class="text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 p-2 rounded-lg transition-all" title="Delete Forever"><span class="material-symbols-outlined">delete_forever</span></button></div>`;
   }
   const checked = task.completed ? 'checked' : '';
-  const line = task.completed ? 'line-through text-secondary opacity-70' : 'text-on-surface';
-  const cardBg = task.completed ? 'bg-surface-container-low border-transparent' : (overdue ? 'bg-error-container/20 border-error/30' : 'bg-surface border-[#E5E5E7]');
-  const chkBg = task.completed ? 'peer-checked:bg-secondary peer-checked:border-secondary' : 'peer-checked:bg-primary peer-checked:border-primary';
+  const line = task.completed ? 'line-through text-gray-400' : 'text-gray-900 dark:text-gray-100';
+  const cardBg = task.completed ? 'bg-gray-50 dark:bg-gray-800/50 border-gray-100 dark:border-gray-700/50' : (overdue ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50' : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700');
   const dl = formatDeadline(task.deadline);
   const tm = formatTime(task.time);
-  return `<div class="task-card ${cardBg} border p-md lg:p-lg rounded-xl flex items-center gap-md hover:-translate-y-[1px] hover:shadow-[0_12px_24px_rgba(0,0,0,0.04)] transition-all duration-300 group cursor-pointer relative overflow-hidden" data-id="${task.id}">
-    ${!task.completed ? `<div class="absolute left-0 top-0 bottom-0 w-1 ${overdue ? 'bg-error' : p.bar} rounded-l-xl"></div>` : ''}
+  return `<div class="task-card ${cardBg} border p-4 rounded-xl flex items-center gap-4 hover:-translate-y-[1px] hover:shadow-lg transition-all duration-300 group cursor-pointer relative overflow-hidden">
+    ${!task.completed ? `<div class="absolute left-0 top-0 bottom-0 w-1 ${overdue ? 'bg-red-500' : p.bar} rounded-l-xl"></div>` : ''}
     <label class="flex items-center cursor-pointer relative" onclick="event.stopPropagation()">
-      <input type="checkbox" class="peer sr-only" ${checked} onchange="event.preventDefault();toggleTask(${task.id})"/>
-      <div class="w-6 h-6 rounded-full border-2 border-outline-variant ${chkBg} flex items-center justify-center transition-colors">
+      <input type="checkbox" class="peer sr-only" ${checked} onchange="toggleTask(${task.id})"/>
+      <div class="w-6 h-6 rounded-full border-2 border-gray-300 dark:border-gray-600 peer-checked:bg-blue-500 peer-checked:border-blue-500 flex items-center justify-center transition-colors">
         <span class="material-symbols-outlined text-white text-[16px] opacity-0 peer-checked:opacity-100" style="font-variation-settings:'FILL' 1;">check</span></div></label>
     <div class="flex-grow" onclick="openEditModal(${task.id})">
-      <p class="font-body-md text-body-md ${line}">${esc(task.title)}</p>
-      ${!task.completed ? `<div class="flex items-center gap-sm mt-xs flex-wrap">
-        <span class="px-2 py-0.5 rounded-full ${p.bg} ${p.text} font-label-sm text-[10px] uppercase">${p.label}</span>
-        <span class="px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-[10px] uppercase">${esc(task.category)}</span>
-        ${overdue ? '<span class="px-2 py-0.5 rounded-full bg-error text-on-error font-label-sm text-[10px] uppercase animate-pulse">Overdue</span>' : ''}
-        ${dl ? `<span class="font-label-sm text-label-sm ${overdue ? 'text-error' : 'text-on-surface-variant'} flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">event</span>${dl}</span>` : ''}
-        ${tm ? `<span class="font-label-sm text-label-sm ${overdue ? 'text-error' : 'text-on-surface-variant'} flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">schedule</span>${tm}</span>` : ''}
+      <p class="text-sm font-medium ${line}">${esc(task.title)}</p>
+      ${!task.completed ? `<div class="flex items-center gap-2 mt-1 flex-wrap">
+        <span class="px-2 py-0.5 rounded-full ${p.bg} ${p.text} text-[10px] font-semibold uppercase">${p.label}</span>
+        <span class="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-[10px] font-semibold uppercase">${esc(task.category)}</span>
+        ${overdue ? '<span class="px-2 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-semibold uppercase animate-pulse">Overdue</span>' : ''}
+        ${dl ? `<span class="text-xs ${overdue?'text-red-500':'text-gray-500 dark:text-gray-400'} flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">event</span>${dl}</span>` : ''}
+        ${tm ? `<span class="text-xs ${overdue?'text-red-500':'text-gray-500 dark:text-gray-400'} flex items-center gap-1"><span class="material-symbols-outlined text-[14px]">schedule</span>${tm}</span>` : ''}
       </div>` : ''}</div>
-    <button onclick="event.stopPropagation();deleteTask(${task.id})" class="text-outline-variant hover:text-error opacity-0 group-hover:opacity-100 transition-all p-sm rounded-lg hover:bg-error-container/50"><span class="material-symbols-outlined">delete</span></button></div>`;
+    <button onclick="event.stopPropagation();deleteTask(${task.id})" class="text-gray-300 dark:text-gray-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-2 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30"><span class="material-symbols-outlined">delete</span></button></div>`;
 }
 
 // ============================================================
@@ -223,36 +180,40 @@ function initApp() {
     const view = currentView$.value;
     statsHeader.classList.toggle('hidden', view !== 'tasks');
     addTaskBar.classList.toggle('hidden', view !== 'tasks');
-
     if (view === 'trash') {
       const trash = trashTasks$.value;
       taskListEl.innerHTML = trash.length === 0
-        ? `<div class="text-center py-xl text-on-surface-variant"><span class="material-symbols-outlined text-[48px] mb-md block opacity-30">delete_sweep</span><p class="font-body-md text-body-md">Trash is empty</p></div>`
-        : `<div class="flex justify-between items-center mb-md"><h3 class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider pl-xs">Trash (${trash.length})</h3><button onclick="emptyTrash()" class="text-error font-label-md text-label-sm hover:bg-error-container/50 px-md py-xs rounded-lg transition-colors">Empty Trash</button></div>` + trash.map(t => renderTaskCard(t, true)).join('');
+        ? `<div class="text-center py-16 text-gray-400"><span class="material-symbols-outlined text-[48px] mb-4 block opacity-30">delete_sweep</span><p>Trash is empty</p></div>`
+        : `<div class="flex justify-between items-center mb-4"><h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider pl-1">Trash (${trash.length})</h3><button onclick="emptyTrash()" class="text-red-500 text-xs font-medium hover:bg-red-50 dark:hover:bg-red-900/30 px-3 py-1 rounded-lg transition-colors">Empty Trash</button></div>` + trash.map(t => renderTaskCard(t, true)).join('');
       return;
     }
     if (view === 'statistics') { renderStatistics(); return; }
 
-    const pending = pendingTasks$.value;
-    const done = completedTasks$.value;
+    // TASKS VIEW: Overdue → Pending → Completed
+    const all = filteredTasks$.value;
+    const overdueTasks = all.filter(t => isOverdue(t));
+    const pendingNormal = all.filter(t => !t.completed && !isOverdue(t));
+    const doneTasks = all.filter(t => t.completed);
     let html = '';
-    if (pending.length > 0) {
-      html += `<h3 class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider mb-sm pl-xs">Pending (${pending.length})</h3>`;
-      html += pending.map(t => renderTaskCard(t)).join('');
+    if (overdueTasks.length > 0) {
+      html += `<h3 class="text-xs font-semibold text-red-500 uppercase tracking-wider mb-2 pl-1 flex items-center gap-1"><span class="material-symbols-outlined text-[16px]">warning</span>Overdue (${overdueTasks.length})</h3>`;
+      html += overdueTasks.map(t => renderTaskCard(t)).join('');
     }
-    if (done.length > 0) {
-      html += `<h3 class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider mt-lg mb-sm pl-xs">Completed (${done.length})</h3>`;
-      html += done.map(t => renderTaskCard(t)).join('');
+    if (pendingNormal.length > 0) {
+      html += `<h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider ${overdueTasks.length?'mt-6':''}  mb-2 pl-1">Pending (${pendingNormal.length})</h3>`;
+      html += pendingNormal.map(t => renderTaskCard(t)).join('');
     }
-    if (!pending.length && !done.length) {
-      html = `<div class="text-center py-xl text-on-surface-variant"><span class="material-symbols-outlined text-[48px] mb-md block opacity-30">task_alt</span><p class="font-body-md text-body-md">No tasks found. Add one above!</p></div>`;
+    if (doneTasks.length > 0) {
+      html += `<h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mt-6 mb-2 pl-1">Completed (${doneTasks.length})</h3>`;
+      html += doneTasks.map(t => renderTaskCard(t)).join('');
+    }
+    if (!overdueTasks.length && !pendingNormal.length && !doneTasks.length) {
+      html = `<div class="text-center py-16 text-gray-400"><span class="material-symbols-outlined text-[48px] mb-4 block opacity-30">task_alt</span><p>No tasks found. Add one above!</p></div>`;
     }
     taskListEl.innerHTML = html;
   }
 
   filteredTasks$.subscribe(renderList);
-  pendingTasks$.subscribe(renderList);
-  completedTasks$.subscribe(renderList);
   trashTasks$.subscribe(() => { if (currentView$.value === 'trash') renderList(); });
 
   totalCount$.subscribe(v => { statTotal.textContent = v; });
@@ -263,12 +224,10 @@ function initApp() {
   currentView$.subscribe(view => {
     headerTitle.textContent = viewTitles[view] || 'Tasks';
     document.querySelectorAll('[data-view]').forEach(el => {
-      const active = el.dataset.view === view;
-      el.classList.toggle('bg-secondary-fixed-dim/30', active);
-      el.classList.toggle('text-primary', active);
-      el.classList.toggle('border-l-4', active);
-      el.classList.toggle('border-primary', active);
-      el.classList.toggle('text-on-surface-variant', !active);
+      const a = el.dataset.view === view;
+      el.className = a
+        ? 'flex items-center gap-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg px-4 py-2 border-l-4 border-blue-600 dark:border-blue-400 cursor-pointer font-medium text-sm'
+        : 'flex items-center gap-3 text-gray-500 dark:text-gray-400 px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors cursor-pointer text-sm';
     });
     renderList();
   });
@@ -278,46 +237,26 @@ function initApp() {
     el.addEventListener('click', e => { e.preventDefault(); currentView$.value = el.dataset.view; });
   });
 
-  // Dark mode
   darkToggle.addEventListener('click', () => { darkMode$.value = !darkMode$.value; darkIcon.textContent = darkMode$.value ? 'light_mode' : 'dark_mode'; });
   darkIcon.textContent = darkMode$.value ? 'light_mode' : 'dark_mode';
 
-  // Add task button
   document.getElementById('add-task-btn').addEventListener('click', () => openAddModal());
   document.getElementById('modal-backdrop').addEventListener('click', closeModal);
 
-  // Profile dropdown
+  // Profile & Notification dropdowns
   const profileBtn = document.getElementById('profile-btn');
-  const profileDropdown = document.getElementById('profile-dropdown');
-  profileBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    profileDropdown.classList.toggle('hidden');
-    document.getElementById('notif-dropdown').classList.add('hidden');
-  });
-
-  // Notification dropdown
+  const profileDD = document.getElementById('profile-dropdown');
   const notifBtn = document.getElementById('notif-btn');
-  const notifDropdown = document.getElementById('notif-dropdown');
-  notifBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    notifDropdown.classList.toggle('hidden');
-    profileDropdown.classList.add('hidden');
-    // Remove red dot
-    document.getElementById('notif-dot').classList.add('hidden');
-  });
+  const notifDD = document.getElementById('notif-dropdown');
+  profileBtn.addEventListener('click', e => { e.stopPropagation(); profileDD.classList.toggle('hidden'); notifDD.classList.add('hidden'); });
+  notifBtn.addEventListener('click', e => { e.stopPropagation(); notifDD.classList.toggle('hidden'); profileDD.classList.add('hidden'); document.getElementById('notif-dot').classList.add('hidden'); });
+  document.addEventListener('click', () => { profileDD.classList.add('hidden'); notifDD.classList.add('hidden'); });
 
-  // Close dropdowns on outside click
-  document.addEventListener('click', () => {
-    profileDropdown.classList.add('hidden');
-    notifDropdown.classList.add('hidden');
-  });
-
-  // Overdue check interval
   setInterval(() => { if (currentView$.value === 'tasks') renderList(); }, 60000);
 }
 
 // ============================================================
-// MODAL (Add / Edit) with date + time
+// MODAL
 // ============================================================
 function openAddModal() {
   document.getElementById('modal-title').textContent = 'Add New Task';
@@ -331,7 +270,6 @@ function openAddModal() {
   document.getElementById('editing-task-id').value = '';
   showModal();
 }
-
 function openEditModal(id) {
   const task = tasks$.value.find(t => t.id === id);
   if (!task) return;
@@ -346,81 +284,70 @@ function openEditModal(id) {
   document.getElementById('editing-task-id').value = id;
   showModal();
 }
-
 function showModal() {
-  const m = document.getElementById('modal-container');
-  const b = document.getElementById('modal-backdrop');
+  const m = document.getElementById('modal-container'), b = document.getElementById('modal-backdrop');
   m.classList.remove('hidden'); b.classList.remove('hidden');
   requestAnimationFrame(() => { m.classList.add('modal-visible'); b.classList.add('backdrop-visible'); });
   document.getElementById('modal-task-title').focus();
 }
-
 function closeModal() {
-  const m = document.getElementById('modal-container');
-  const b = document.getElementById('modal-backdrop');
+  const m = document.getElementById('modal-container'), b = document.getElementById('modal-backdrop');
   m.classList.remove('modal-visible'); b.classList.remove('backdrop-visible');
   setTimeout(() => { m.classList.add('hidden'); b.classList.add('hidden'); }, 300);
 }
-
 function saveModal() {
   const title = document.getElementById('modal-task-title').value.trim();
   if (!title) return;
-  const priority = document.getElementById('modal-priority').value;
-  const category = document.getElementById('modal-category').value;
-  const deadline = document.getElementById('modal-deadline').value;
-  const time = document.getElementById('modal-time').value;
-  const editId = document.getElementById('editing-task-id').value;
-  if (editId) { updateTask(Number(editId), { title, priority, category, deadline, time }); }
-  else { addTask(title, priority, category, deadline, time); }
+  const pri = document.getElementById('modal-priority').value;
+  const cat = document.getElementById('modal-category').value;
+  const dl = document.getElementById('modal-deadline').value;
+  const tm = document.getElementById('modal-time').value;
+  const eid = document.getElementById('editing-task-id').value;
+  if (eid) updateTask(Number(eid), { title, priority: pri, category: cat, deadline: dl, time: tm });
+  else addTask(title, pri, cat, dl, tm);
   closeModal();
 }
-
 function deleteFromModal() {
-  const editId = document.getElementById('editing-task-id').value;
-  if (editId) { deleteTask(Number(editId)); closeModal(); }
+  const eid = document.getElementById('editing-task-id').value;
+  if (eid) { closeModal(); deleteTask(Number(eid)); }
 }
 
 // ============================================================
-// STATISTICS VIEW
+// STATISTICS
 // ============================================================
 function renderStatistics() {
-  const all = tasks$.value;
-  const done = all.filter(t => t.completed).length;
+  const all = tasks$.value, done = all.filter(t => t.completed).length, pct = all.length ? Math.round(done/all.length*100) : 0;
+  const od = all.filter(t => isOverdue(t)).length;
+  const cats = {}; all.forEach(t => { cats[t.category]=(cats[t.category]||0)+1; });
+  const pri = {high:0,medium:0,low:0}; all.forEach(t => { if (!t.completed) pri[t.priority]++; });
   const pending = all.length - done;
-  const pct = all.length ? Math.round((done / all.length) * 100) : 0;
-  const overdueCount = all.filter(t => isOverdue(t)).length;
-  const cats = {}; all.forEach(t => { cats[t.category] = (cats[t.category]||0)+1; });
-  const pri = { high:0, medium:0, low:0 }; all.forEach(t => { if (!t.completed) pri[t.priority]++; });
-
   document.getElementById('task-list').innerHTML = `
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-md">
-      <div class="bg-surface border border-[#E5E5E7] p-lg rounded-xl">
-        <h3 class="font-headline-md text-headline-md text-on-surface mb-md">Completion Rate</h3>
-        <div class="flex items-center gap-lg">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-6 rounded-xl">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">Completion Rate</h3>
+        <div class="flex items-center gap-6">
           <div class="relative w-28 h-28">
             <svg viewBox="0 0 36 36" class="w-28 h-28 transform -rotate-90">
-              <path d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831a15.9155 15.9155 0 0 1 0-31.831" fill="none" stroke="#e5e7eb" stroke-width="3"/>
-              <path d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831a15.9155 15.9155 0 0 1 0-31.831" fill="none" stroke="#0058bc" stroke-width="3" stroke-dasharray="${pct},100" stroke-linecap="round"/>
+              <path d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831a15.9155 15.9155 0 0 1 0-31.831" fill="none" stroke="#e5e7eb" stroke-width="3" class="dark:stroke-gray-700"/>
+              <path d="M18 2.0845a15.9155 15.9155 0 0 1 0 31.831a15.9155 15.9155 0 0 1 0-31.831" fill="none" stroke="#3b82f6" stroke-width="3" stroke-dasharray="${pct},100" stroke-linecap="round"/>
             </svg>
-            <span class="absolute inset-0 flex items-center justify-center font-headline-md text-headline-md text-primary">${pct}%</span>
+            <span class="absolute inset-0 flex items-center justify-center text-2xl font-bold text-blue-500">${pct}%</span>
           </div>
-          <div>
-            <p class="font-body-md text-body-md text-on-surface-variant">${done} of ${all.length} tasks completed</p>
-            ${overdueCount > 0 ? `<p class="font-label-md text-label-md text-error mt-xs">${overdueCount} overdue task(s)</p>` : ''}
-          </div>
+          <div><p class="text-sm text-gray-500 dark:text-gray-400">${done} of ${all.length} completed</p>
+            ${od>0?`<p class="text-xs text-red-500 mt-1">${od} overdue task(s)</p>`:''}</div>
         </div>
       </div>
-      <div class="bg-surface border border-[#E5E5E7] p-lg rounded-xl">
-        <h3 class="font-headline-md text-headline-md text-on-surface mb-md">By Priority</h3>
-        <div class="space-y-md">
-          <div><div class="flex justify-between font-label-md text-label-md mb-xs"><span class="text-error">High</span><span>${pri.high}</span></div><div class="w-full bg-surface-container-high rounded-full h-2"><div class="bg-error h-2 rounded-full" style="width:${pending?(pri.high/pending*100):0}%"></div></div></div>
-          <div><div class="flex justify-between font-label-md text-label-md mb-xs"><span class="text-primary">Medium</span><span>${pri.medium}</span></div><div class="w-full bg-surface-container-high rounded-full h-2"><div class="bg-primary h-2 rounded-full" style="width:${pending?(pri.medium/pending*100):0}%"></div></div></div>
-          <div><div class="flex justify-between font-label-md text-label-md mb-xs"><span class="text-secondary">Low</span><span>${pri.low}</span></div><div class="w-full bg-surface-container-high rounded-full h-2"><div class="bg-secondary h-2 rounded-full" style="width:${pending?(pri.low/pending*100):0}%"></div></div></div>
+      <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-6 rounded-xl">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">By Priority</h3>
+        <div class="space-y-4">
+          <div><div class="flex justify-between text-xs font-medium mb-1"><span class="text-red-500">High</span><span class="text-gray-500">${pri.high}</span></div><div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2"><div class="bg-red-500 h-2 rounded-full" style="width:${pending?(pri.high/pending*100):0}%"></div></div></div>
+          <div><div class="flex justify-between text-xs font-medium mb-1"><span class="text-blue-500">Medium</span><span class="text-gray-500">${pri.medium}</span></div><div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2"><div class="bg-blue-500 h-2 rounded-full" style="width:${pending?(pri.medium/pending*100):0}%"></div></div></div>
+          <div><div class="flex justify-between text-xs font-medium mb-1"><span class="text-gray-500">Low</span><span class="text-gray-500">${pri.low}</span></div><div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2"><div class="bg-gray-400 h-2 rounded-full" style="width:${pending?(pri.low/pending*100):0}%"></div></div></div>
         </div>
       </div>
-      <div class="bg-surface border border-[#E5E5E7] p-lg rounded-xl md:col-span-2">
-        <h3 class="font-headline-md text-headline-md text-on-surface mb-md">By Category</h3>
-        <div class="flex flex-wrap gap-md">${Object.entries(cats).map(([c,n]) => `<div class="flex-1 min-w-[120px] bg-surface-container-low p-md rounded-xl text-center"><p class="font-display-lg text-display-lg text-primary">${n}</p><p class="font-label-md text-label-md text-on-surface-variant mt-xs">${esc(c)}</p></div>`).join('')}</div>
+      <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 p-6 rounded-xl md:col-span-2">
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">By Category</h3>
+        <div class="flex flex-wrap gap-4">${Object.entries(cats).map(([c,n])=>`<div class="flex-1 min-w-[120px] bg-gray-50 dark:bg-gray-700/50 p-4 rounded-xl text-center"><p class="text-3xl font-bold text-blue-500">${n}</p><p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">${esc(c)}</p></div>`).join('')}</div>
       </div>
     </div>`;
 }
