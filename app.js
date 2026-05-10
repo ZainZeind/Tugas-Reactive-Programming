@@ -296,8 +296,50 @@ function closeModal() {
   setTimeout(() => { m.classList.add('hidden'); b.classList.add('hidden'); }, 300);
 }
 function saveModal() {
+  // Validate all fields
+  const fields = [
+    { id: 'modal-task-title', label: 'Task Title' },
+    { id: 'modal-priority', label: 'Priority' },
+    { id: 'modal-category', label: 'Category' },
+    { id: 'modal-deadline', label: 'Deadline Date' },
+    { id: 'modal-time', label: 'Deadline Time' },
+  ];
+  let valid = true;
+  // Clear previous errors
+  fields.forEach(f => {
+    const el = document.getElementById(f.id);
+    el.classList.remove('border-red-500', 'ring-2', 'ring-red-500');
+    const err = el.parentElement.querySelector('.field-error');
+    if (err) err.remove();
+  });
+  // Check each field
+  fields.forEach(f => {
+    const el = document.getElementById(f.id);
+    if (!el.value || !el.value.trim()) {
+      valid = false;
+      el.classList.add('border-red-500', 'ring-2', 'ring-red-500');
+      const errSpan = document.createElement('span');
+      errSpan.className = 'field-error text-red-500 text-[10px] font-medium mt-0.5 block';
+      errSpan.textContent = f.label + ' is required';
+      el.parentElement.appendChild(errSpan);
+      // Remove error on input
+      el.addEventListener('input', function handler() {
+        el.classList.remove('border-red-500', 'ring-2', 'ring-red-500');
+        const e = el.parentElement.querySelector('.field-error');
+        if (e) e.remove();
+        el.removeEventListener('input', handler);
+      }, { once: true });
+      el.addEventListener('change', function handler() {
+        el.classList.remove('border-red-500', 'ring-2', 'ring-red-500');
+        const e = el.parentElement.querySelector('.field-error');
+        if (e) e.remove();
+        el.removeEventListener('change', handler);
+      }, { once: true });
+    }
+  });
+  if (!valid) return;
+
   const title = document.getElementById('modal-task-title').value.trim();
-  if (!title) return;
   const pri = document.getElementById('modal-priority').value;
   const cat = document.getElementById('modal-category').value;
   const dl = document.getElementById('modal-deadline').value;
