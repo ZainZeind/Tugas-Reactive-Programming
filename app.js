@@ -35,6 +35,8 @@ const currentView$ = new ReactiveState('tasks');
 const darkMode$ = new ReactiveState(localStorage.getItem('jadwalinyuk_dark') === 'true');
 const trashTasks$ = new ReactiveState(JSON.parse(localStorage.getItem('jadwalinyuk_trash') || '[]'));
 const confirmDialog$ = new ReactiveState(null);
+const selectedDate$ = new ReactiveState((() => { const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })());
+const weekOffset$ = new ReactiveState(0);
 
 const filteredTasks$ = computed([tasks$, searchQuery$], (tasks, q) => {
   if (!q) return tasks;
@@ -188,6 +190,7 @@ function initApp() {
       return;
     }
     if (view === 'statistics') { renderStatistics(); return; }
+    if (view === 'schedule') { renderSchedule(); return; }
 
     // TASKS VIEW: Overdue → Pending → Completed
     const all = filteredTasks$.value;
@@ -220,7 +223,7 @@ function initApp() {
   completedCount$.subscribe(v => { statDone.textContent = v; });
   pendingCount$.subscribe(v => { statPending.textContent = v; sidebarCount.textContent = v + ' Active Tasks'; });
 
-  const viewTitles = { tasks:'Tasks', trash:'Trash', statistics:'Statistics' };
+  const viewTitles = { tasks:'Tasks', trash:'Trash', statistics:'Statistics', schedule:'Schedule' };
   currentView$.subscribe(view => {
     headerTitle.textContent = viewTitles[view] || 'Tasks';
     document.querySelectorAll('[data-view]').forEach(el => {
@@ -234,7 +237,14 @@ function initApp() {
 
   searchInput.addEventListener('input', e => { searchQuery$.value = e.target.value; });
   document.querySelectorAll('[data-view]').forEach(el => {
-    el.addEventListener('click', e => { e.preventDefault(); currentView$.value = el.dataset.view; });
+    el.addEventListener('click', e => {
+      e.preventDefault();
+      if (el.dataset.view === 'schedule') {
+        const d=new Date(); selectedDate$.value = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+        weekOffset$.value = 0;
+      }
+      currentView$.value = el.dataset.view;
+    });
   });
 
   darkToggle.addEventListener('click', () => { darkMode$.value = !darkMode$.value; darkIcon.textContent = darkMode$.value ? 'light_mode' : 'dark_mode'; });
@@ -252,7 +262,9 @@ function initApp() {
   notifBtn.addEventListener('click', e => { e.stopPropagation(); notifDD.classList.toggle('hidden'); profileDD.classList.add('hidden'); document.getElementById('notif-dot').classList.add('hidden'); });
   document.addEventListener('click', () => { profileDD.classList.add('hidden'); notifDD.classList.add('hidden'); });
 
-  setInterval(() => { if (currentView$.value === 'tasks') renderList(); }, 60000);
+  selectedDate$.subscribe(() => { if (currentView$.value === 'schedule') renderList(); });
+  weekOffset$.subscribe(() => { if (currentView$.value === 'schedule') renderList(); });
+  setInterval(() => { if (currentView$.value === 'tasks' || currentView$.value === 'schedule') renderList(); }, 60000);
 }
 
 // ============================================================
@@ -352,6 +364,157 @@ function saveModal() {
 function deleteFromModal() {
   const eid = document.getElementById('editing-task-id').value;
   if (eid) { closeModal(); deleteTask(Number(eid)); }
+}
+
+// ============================================================
+// SCHEDULE VIEW
+// ============================================================
+function localDateStr(d) {
+  const yyyy = d.getFullYear(), mm = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+function getWeekDays(offset) {
+  const now = new Date();
+  const mon = new Date(now);
+  mon.setDate(now.getDate() - now.getDay() + 1 + (offset * 7));
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(mon);
+    d.setDate(mon.getDate() + i);
+    days.push(d);
+  }
+  return days;
+}
+
+function getDateLabel(dateStr) {
+  const d = new Date(dateStr + 'T00:00');
+  const now = new Date(); now.setHours(0,0,0,0);
+  const diff = Math.round((d - now) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  if (diff === 2) return d.toLocaleDateString('en-US', { weekday: 'long' });
+  if (diff === -1) return 'Yesterday';
+  if (diff > 2 && diff <= 7) return d.toLocaleDateString('en-US', { weekday: 'long' });
+  if (diff > 7 && diff <= 14) return 'Next Week';
+  if (diff < 0) return 'Past';
+  return 'Later';
+}
+function getDayDiff(dateStr) {
+  const d = new Date(dateStr + 'T00:00');
+  const now = new Date(); now.setHours(0,0,0,0);
+  return Math.round((d - now) / 86400000);
+}
+
+function renderSchedule() {
+  const days = getWeekDays(weekOffset$.value);
+  const todayStr = localDateStr(new Date());
+  const sel = selectedDate$.value;
+  const isDefaultView = sel === todayStr;
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const now = new Date();
+
+  // Categorize tasks per day: pending vs overdue (incomplete only)
+  const pendingByDay = {}, overdueByDay = {};
+  tasks$.value.filter(t => !t.completed && t.deadline).forEach(t => {
+    const dl = new Date(t.deadline + (t.time ? 'T' + t.time : 'T23:59'));
+    if (now > dl) {
+      overdueByDay[t.deadline] = (overdueByDay[t.deadline]||0)+1;
+    } else {
+      pendingByDay[t.deadline] = (pendingByDay[t.deadline]||0)+1;
+    }
+  });
+
+  // Calendar strip — clickable days, selected state, red/blue dots
+  let strip = `<div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 mb-6 flex items-center gap-2">
+    <button onclick="weekOffset$.value--" class="w-10 h-10 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 transition-colors flex-shrink-0">
+      <span class="material-symbols-outlined">chevron_left</span>
+    </button>
+    <div class="flex gap-1 flex-1 justify-between">`;
+  days.forEach(d => {
+    const ds = localDateStr(d);
+    const isToday = ds === todayStr;
+    const isSelected = ds === sel;
+    const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+    const hasOverdue = overdueByDay[ds] > 0;
+    const hasPending = pendingByDay[ds] > 0;
+    const bg = isSelected
+      ? 'bg-blue-500 text-white shadow-md'
+      : (isToday ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 ring-1 ring-blue-300 dark:ring-blue-700' : 'hover:bg-gray-100 dark:hover:bg-gray-700');
+    const opacity = isWeekend && !isSelected && !isToday ? 'opacity-50' : '';
+    const dotColor = hasOverdue ? 'bg-red-500' : (hasPending ? 'bg-blue-500' : '');
+    strip += `<div onclick="selectedDate$.value='${ds}'" class="flex flex-col items-center justify-center p-2 rounded-xl cursor-pointer transition-all w-16 relative ${bg} ${opacity}">
+      ${dotColor && !isSelected ? `<div class="absolute top-1.5 right-1.5 w-1.5 h-1.5 ${dotColor} rounded-full"></div>` : ''}
+      <span class="text-[10px] font-semibold uppercase mb-0.5 ${isSelected ? 'text-blue-100' : 'text-gray-500 dark:text-gray-400'}">${dayNames[d.getDay()]}</span>
+      <span class="text-base font-bold ${isSelected ? 'text-white' : 'text-gray-900 dark:text-gray-100'}">${d.getDate()}</span>
+    </div>`;
+  });
+  strip += `</div>
+    <button onclick="weekOffset$.value++" class="w-10 h-10 rounded-full flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 transition-colors flex-shrink-0">
+      <span class="material-symbols-outlined">chevron_right</span>
+    </button>
+  </div>`;
+
+  // Month label
+  const monthLabel = days[3].toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  let header = `<div class="flex items-center justify-between mb-4">
+    <div>
+      <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100">Schedule</h2>
+      <p class="text-sm text-gray-500 dark:text-gray-400">Your tasks organized by date — ${monthLabel}</p>
+    </div>
+    <button onclick="selectedDate$.value=localDateStr(new Date());weekOffset$.value=0" class="text-xs font-medium text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 px-3 py-1.5 rounded-lg transition-colors">Today</button>
+  </div>`;
+
+  let content = '';
+
+  // Helper to render one date section
+  function renderDateSection(dateStr) {
+    const pending = tasks$.value.filter(t => t.deadline === dateStr && !t.completed);
+    const completed = tasks$.value.filter(t => t.deadline === dateStr && t.completed);
+    if (pending.length === 0 && completed.length === 0) return '';
+    const label = getDateLabel(dateStr);
+    const dateObj = new Date(dateStr + 'T00:00');
+    const fullLabel = dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    let s = `<div class="mb-6">
+      <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-200 dark:border-gray-700 pb-2 mb-3 flex items-center gap-2">
+        <span class="${label === 'Today' ? 'text-blue-500' : 'text-gray-700 dark:text-gray-300'}">${label}</span>
+        <span class="text-gray-400 font-normal text-sm">— ${fullLabel}</span>
+      </h3>`;
+    if (pending.length > 0) {
+      s += `<div class="flex flex-col gap-2">${pending.map(t => renderTaskCard(t)).join('')}</div>`;
+    }
+    if (completed.length > 0) {
+      s += `<h4 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2 pl-1">Completed (${completed.length})</h4>`;
+      s += `<div class="flex flex-col gap-2">${completed.map(t => renderTaskCard(t)).join('')}</div>`;
+    }
+    s += `</div>`;
+    return s;
+  }
+
+  if (isDefaultView) {
+    // Default: show Today, Tomorrow, Day After Tomorrow
+    const todayDate = new Date(); todayDate.setHours(0,0,0,0);
+    const dates = [];
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(todayDate);
+      d.setDate(todayDate.getDate() + i);
+      dates.push(localDateStr(d));
+    }
+    dates.forEach(ds => { content += renderDateSection(ds); });
+    if (!content) {
+      content = `<div class="text-center py-12 text-gray-400"><span class="material-symbols-outlined text-[48px] mb-3 block opacity-30">event_available</span><p class="text-sm">No tasks scheduled for the next 3 days</p></div>`;
+    }
+  } else {
+    // Specific date: show only that date
+    content = renderDateSection(sel);
+    if (!content) {
+      const selDate = new Date(sel + 'T00:00');
+      const selLabel = selDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+      content = `<div class="mb-4"><h3 class="text-base font-semibold text-gray-900 dark:text-gray-100 border-b border-gray-200 dark:border-gray-700 pb-2 mb-3">${selLabel}</h3></div>
+        <div class="text-center py-12 text-gray-400"><span class="material-symbols-outlined text-[48px] mb-3 block opacity-30">event_available</span><p class="text-sm">No tasks scheduled for this date</p></div>`;
+    }
+  }
+
+  document.getElementById('task-list').innerHTML = header + strip + content;
 }
 
 // ============================================================
